@@ -12,8 +12,8 @@ Sample Schedule Data:
 
 ```json
 {
-  "week": "0",
   "animeNo": 2508,
+  "week": "0",
   "status": "ON",
   "time": "01:00",
   "subject": "티어문 제국 이야기 ~단두대에서 시작하는 황녀님의 전생 역전 스토리~",
