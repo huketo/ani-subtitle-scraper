@@ -85,3 +85,10 @@ Sample Caption Data:
 6. 다운로드 링크의 유형을 분류한다.
 7. 자막을 다운로드 받는다.
 8. 다운로드 파일에 폰트가 존재할 경우 폰트 파일을 따로 저장한다.
+
+## Build & Run
+
+```bash
+CGO_ENABLED=0 go build -o ./build/anisub-scraper
+./build/anisub-scraper serve
+```

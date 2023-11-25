@@ -2,17 +2,19 @@ package main
 
 import (
 	"archive/zip"
-	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
+
+	"github.com/huketo/anisub-scraper/db"
+	"github.com/huketo/anisub-scraper/poller"
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/apis"
@@ -23,9 +25,6 @@ import (
 	"github.com/joho/godotenv"
 	"golang.org/x/text/encoding/korean"
 	"golang.org/x/text/transform"
-
-	"google.golang.org/api/drive/v3"
-	"google.golang.org/api/option"
 )
 
 // link의 타입을 정의
@@ -218,13 +217,17 @@ func main() {
 		log.Fatalf("failed to load .env file: %v", err)
 	}
 	// 다운로드 디렉토리를 설정한다.
-	downloadDir := os.Getenv("DOWNLOAD_DIR")
+	// downloadDir := os.Getenv("DOWNLOAD_DIR")
 
 	// API 키를 설정한다.
 	apiKey := os.Getenv("GDRIVE_API_KEY")
 	if apiKey == "" {
 		log.Fatalf("failed to get api key")
 	}
+
+	// Poller를 생성한다.
+	pollingInterval := os.Getenv("POLLING_INTERVAL")
+	poller := poller.NewPoller(pollingInterval)
 
 	// PocketBase를 생성한다.
 	app := pocketbase.New()
@@ -235,169 +238,30 @@ func main() {
 
 		scheduler := cron.New()
 
-		// call poller every 10 minute
-		scheduler.MustAdd("poller", "*/10 * * * *", func() {
-			log.Println("Call Poller - Anime Schedule")
+		// call poller every 1 minute
+		scheduler.MustAdd("poller", "*/1 * * * *", func() {
+			log.Println("[Poller] - Request Anime Schedule")
+			poller.Run()
 		})
+		// // call poller every 10 minute
+		// scheduler.MustAdd("poller", "*/10 * * * *", func() {
+		// 	log.Println("[Poller] - Request Anime Schedule")
+		// 	poller.Run()
+		// })
 
 		scheduler.Start()
 
 		return nil
 	})
 
+	// 고루틴을 사용해서 서버 시작 후에 Collection을 초기화한다.
+	go func() {
+		time.Sleep(10 * time.Second)
+		db.InitCollection(app)
+	}()
+
 	// 서버를 시작한다.
 	if err := app.Start(); err != nil {
 		log.Fatal(err)
-	}
-
-	ctx := context.Background()
-	srv, err := drive.NewService(ctx, option.WithAPIKey(apiKey))
-	if err != nil {
-		log.Fatalf("failed to create drive service: %v", err)
-	}
-
-	links := []string{
-		// "https://bluewater91.blogspot.com/2023/11/season-3-7.html",
-		// "https://kitauji-highschool.blogspot.com/2023/11/season-3-7.html",
-		// "https://ehtelerosa.blogspot.com/2023/10/16bit-another-layer.html",
-		// "https://ozuki1.blogspot.com/2023/11/7_17.html",
-		// "https://han1sub.blogspot.com/2023/10/blog-post.html",
-		"https://blog.naver.com/qtr01122/223268954039",
-	}
-
-	for i, link := range links {
-		var fileLinks []string
-
-		// 링크 타입을 판별한다.
-		linkType := getLinkType(link)
-		// 링크 타입에 따라 파일링크를 찾는다.
-		switch linkType {
-		case CommonBlog:
-			// 구글 드라이브 링크를 찾는다.
-			log.Println("Common Blog")
-			fileLinks, err = findGoogleDriveLink(link)
-			if err != nil {
-				log.Fatalf("failed to find google drive link: %v", err)
-			}
-			log.Printf("[%d]Link Count: %d\n", i, len(fileLinks))
-			// 파일링크를 순회하며 파일을 다운로드한다.
-			for _, fileLink := range fileLinks {
-				fileID, err := parseGDriveFileID(fileLink)
-				if err != nil {
-					log.Fatalf("failed to parse google drive file id: %v", err)
-				}
-
-				log.Printf("File ID: %s\n", fileID)
-
-				// 파일 메타데이터를 가져온다.
-				file, err := srv.Files.Get(fileID).Do()
-				if err != nil {
-					log.Fatalf("failed to get file metadata: %v", err)
-				}
-
-				log.Printf("File Name: %s\n", file.Name)
-
-				// 파일을 다운로드한다.
-				res, err := srv.Files.Get(fileID).Download()
-				if err != nil {
-					log.Fatalf("failed to download file: %v", err)
-				}
-				defer res.Body.Close()
-
-				// 다운로드한 파일을 저장한다.
-				// 파일 이름은 파일 메타데이터에서 가져온다.
-				fileName := strings.TrimSpace(strings.TrimSuffix(file.Name, ".zip"))
-
-				err = os.MkdirAll(fileName, os.ModePerm)
-				if err != nil {
-					log.Fatalf("failed to create directory: %v", err)
-				}
-
-				filePath := fmt.Sprintf("%s/%s/%s", downloadDir, fileName, file.Name)
-				f, err := os.Create(filePath)
-				if err != nil {
-					log.Fatalf("failed to create file: %v", err)
-				}
-				defer f.Close()
-
-				_, err = io.Copy(f, res.Body)
-				if err != nil {
-					log.Fatalf("failed to save file: %v", err)
-				}
-
-				// zip 파일이면 압축을 푼다.
-				if strings.HasSuffix(file.Name, ".zip") {
-					unzipPath := fmt.Sprintf("%s/%s", downloadDir, strings.TrimSuffix(file.Name, ".zip"))
-					err = unzip(filePath, unzipPath)
-					if err != nil {
-						log.Fatalf("failed to unzip file: %v", err)
-					}
-					// 압축 파일은 삭제한다.
-					err = os.Remove(filePath)
-					if err != nil {
-						log.Fatalf("failed to remove zip file: %v", err)
-					}
-				}
-			}
-		case NaverBlog:
-			// 네이버 블로그 링크를 찾는다.
-			log.Println("Naver Blog")
-			fileLinks, err = findNaverBlogLink(link)
-			if err != nil {
-				log.Fatalf("failed to find naver blog link: %v", err)
-			}
-			log.Printf("[%d]Link Count: %d\n", i, len(fileLinks))
-			// TODO: 네이버 블로그 파일 다운로드
-			for _, fileLink := range fileLinks {
-				resp, err := http.Get(fileLink)
-				if err != nil {
-					log.Fatalf("failed to download file: %v", err)
-				}
-				defer resp.Body.Close()
-
-				// Check for correct response code
-				if resp.StatusCode != http.StatusOK {
-					log.Fatalf("failed to download file: %v", err)
-				}
-
-				decodedURL, err := url.QueryUnescape(fileLink)
-				if err != nil {
-					log.Fatalf("failed to decode url: %v", err)
-				}
-
-				log.Printf("File URL: %s\n", decodedURL)
-
-				// 파일 이름을 추출한다.
-				fileName := filepath.Base(decodedURL)
-				log.Printf("File Name: %s\n", fileName)
-
-				// 파일을 다운로드한다.
-				filePath := fmt.Sprintf("%s/%s", downloadDir, fileName)
-				f, err := os.Create(filePath)
-				if err != nil {
-					log.Fatalf("failed to create file: %v", err)
-				}
-				defer f.Close()
-
-				_, err = io.Copy(f, resp.Body)
-				if err != nil {
-					log.Fatalf("failed to save file: %v", err)
-				}
-
-				// zip 파일이면 압축을 푼다.
-				if strings.HasSuffix(fileName, ".zip") {
-					unzipPath := fmt.Sprintf("%s/%s", downloadDir, strings.TrimSuffix(fileName, ".zip"))
-					err = unzip(filePath, unzipPath)
-					if err != nil {
-						log.Fatalf("failed to unzip file: %v", err)
-					}
-					// 압축 파일은 삭제한다.
-					err = os.Remove(filePath)
-					if err != nil {
-						log.Fatalf("failed to remove zip file: %v", err)
-					}
-				}
-			}
-		}
 	}
 }
