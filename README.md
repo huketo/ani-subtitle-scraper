@@ -77,10 +77,9 @@ Sample Caption Data:
 - animeNo
 - subject
 - episode
-- subtitle
-- website
 - name
-- subFile
+- website
+- subtitle
 - createAt
 - updateAt
 

@@ -6,7 +6,10 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase"
+	"github.com/pocketbase/pocketbase/forms"
+	"github.com/pocketbase/pocketbase/models"
 )
 
 // weekDay는 요일을 나타냅니다.
@@ -77,7 +80,7 @@ func NewPoller(pollingInterval string, app *pocketbase.PocketBase) *Poller {
 // Run은 Poller를 실행합니다.
 func (p *Poller) Run() {
 	// 1. 신작 애니메이션 편성표 정보를 받아옵니다.
-	animeInfos, err := p.getNewAnimeSchedule()
+	animeInfos, err := p.GetNewAnimeSchedule()
 	if err != nil {
 		log.Printf("failed to get new anime schedule: %v", err)
 		return
@@ -85,7 +88,7 @@ func (p *Poller) Run() {
 	log.Printf("AnimeCount: %d", len(animeInfos))
 	// 2. 신작 애니메이션 No로 자막 정보를 수집합니다.
 	for _, animeInfo := range animeInfos {
-		subtitleInfos, err := p.getNewAnimeSubtitleInfo(animeInfo.AnimeNo)
+		subtitleInfos, err := p.GetNewAnimeSubtitleInfo(animeInfo.AnimeNo)
 		if err != nil {
 			log.Printf("failed to get new anime subtitle info for Anime[%d]: %v", animeInfo.AnimeNo, err)
 			continue // 실패한 경우 다음 애니메이션으로 넘어갑니다.
@@ -99,36 +102,23 @@ func (p *Poller) Run() {
 		}
 		log.Printf("Anime[%d]-LatestSubtitleInfo: %v", animeInfo.AnimeNo, latestSubtitleInfo)
 
+		// 3. if ok true, 유효한 신작 애니메이션 편성표 정보를 DB에 저장합니다.
+		err = p.SaveNewAnimeSchedule(animeInfo)
+		if err != nil {
+			log.Printf("failed to save new anime schedule for Anime[%d]: %v", animeInfo.AnimeNo, err)
+			continue // 실패한 경우 다음 애니메이션으로 넘어갑니다.
+		}
+		// 4. if ok true, 유효한 신작 애니메이션 자막 정보를 DB에 저장합니다.
+		err = p.SaveNewAnimeSubtitleInfo(animeInfo, latestSubtitleInfo)
+		if err != nil {
+			log.Printf("failed to save new anime subtitle info for Anime[%d]: %v", animeInfo.AnimeNo, err)
+			continue // 실패한 경우 다음 애니메이션으로 넘어갑니다.
+		}
 	}
-
-	// 3. 신작 애니메이션 편성표 정보를 DB에 저장합니다.
-	// animeInfoCollection, err := p.app.Dao().FindCollectionByNameOrId("anime_info")
-	// if err != nil {
-	// 	log.Printf("failed to find anime_info collection: %v", err)
-	// 	return
-	// }
-	// for _, animeInfo := range animeInfos {
-	// 	// 이미 DB에 저장된 애니메이션인지 확인합니다.
-	// 	record := models.NewRecord(animeInfoCollection)
-	// 	form := forms.NewRecordUpsert(p.app, record)
-	// 	form.LoadData(map[string]any{
-	// 		"week":         animeInfo.Week,
-	// 		"anime_no":     animeInfo.AnimeNo,
-	// 		"status":       animeInfo.Status,
-	// 		"time":         animeInfo.Time,
-	// 		"subject":      animeInfo.Subject,
-	// 		"genres":       animeInfo.Genres,
-	// 		"captionCount": animeInfo.CaptionCount,
-	// 		"startDate":    animeInfo.StartDate,
-	// 		"endDate":      animeInfo.EndDate,
-	// 		"website":      animeInfo.Website,
-	// 	})
-	// }
-	// 4. 애니메이션 자막이 업로드되면 scraper에 자막 수집 요청을 보냅니다.
 }
 
 // 신작 애니메이션 편성표 정보를 받아옵니다.
-func (p *Poller) getNewAnimeSchedule() ([]AnimeInfo, error) {
+func (p *Poller) GetNewAnimeSchedule() ([]AnimeInfo, error) {
 	var animeInfos []AnimeInfo
 	// 요일별로 신작 애니메이션 편성표 정보를 받아옵니다.
 	for _, day := range []weekDay{Sunday, Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Others} {
@@ -160,7 +150,7 @@ func (p *Poller) getNewAnimeSchedule() ([]AnimeInfo, error) {
 }
 
 // 신작 애니메이션 No로 자막 정보를 수집합니다.
-func (p *Poller) getNewAnimeSubtitleInfo(animeNo int) ([]SubtitleInfo, error) {
+func (p *Poller) GetNewAnimeSubtitleInfo(animeNo int) ([]SubtitleInfo, error) {
 	var subtitleInfos []SubtitleInfo
 	reqUrl := fmt.Sprintf("https://api.anissia.net/anime/caption/animeNo/%d", animeNo)
 	res, err := http.Get(reqUrl)
@@ -183,4 +173,78 @@ func (p *Poller) getNewAnimeSubtitleInfo(animeNo int) ([]SubtitleInfo, error) {
 	subtitleInfos = subtitleResponse.Data
 
 	return subtitleInfos, nil
+}
+
+func (p *Poller) SaveNewAnimeSchedule(animeInfo AnimeInfo) error {
+	animeInfoCollection, err := p.app.Dao().FindCollectionByNameOrId("anime_info")
+	if err != nil {
+		return fmt.Errorf("failed to find anime_info collection: %v", err)
+	}
+	// 이미 DB에 저장된 애니메이션인지 확인합니다.
+	record, err := p.app.Dao().FindFirstRecordByData("anime_info", "anime_no", animeInfo.AnimeNo)
+	if err != nil {
+		log.Printf("failed to find anime_info record: %v", err)
+		// DB에 저장된 애니메이션이 없는 경우, 새로운 애니메이션 정보를 저장합니다.
+		record = models.NewRecord(animeInfoCollection)
+		log.Println("New anime_info record created")
+	}
+
+	form := forms.NewRecordUpsert(p.app, record)
+	form.LoadData(map[string]any{
+		"week":          animeInfo.Week,
+		"anime_no":      animeInfo.AnimeNo,
+		"status":        animeInfo.Status,
+		"time":          animeInfo.Time,
+		"subject":       animeInfo.Subject,
+		"genres":        animeInfo.Genres,
+		"caption_count": animeInfo.CaptionCount,
+		"start_date":    animeInfo.StartDate,
+		"end_date":      animeInfo.EndDate,
+		"website":       animeInfo.Website,
+	})
+
+	if err := form.Submit(); err != nil {
+		return fmt.Errorf("failed to submit form: %v", err)
+	}
+
+	return nil
+}
+
+func (p *Poller) SaveNewAnimeSubtitleInfo(animeInfo AnimeInfo, subtitleInfo SubtitleInfo) error {
+	animeSubtitleCollection, err := p.app.Dao().FindCollectionByNameOrId("anime_subtitle")
+	if err != nil {
+		return fmt.Errorf("failed to find anime_subtitle collection: %v", err)
+	}
+	// 이미 DB에 저장된 자막인지 확인합니다.
+	// retrieve a single "anime_subtitle" collection record by a string filter expression
+	// (use "{:placeholder}" to safely bind untrusted user input parameters)
+	record, err := p.app.Dao().FindFirstRecordByFilter(
+		"anime_subtitle",
+		"anime_no = {:anime_no} && episode = {:episode}",
+		dbx.Params{
+			"anime_no": animeInfo.AnimeNo,
+			"episode":  subtitleInfo.Episode,
+		},
+	)
+	if err != nil {
+		log.Printf("failed to find anime_subtitle record: %v", err)
+		// DB에 저장된 자막이 없는 경우, 새로운 자막 정보를 저장합니다.
+		record = models.NewRecord(animeSubtitleCollection)
+		log.Println("New anime_subtitle record created")
+	}
+
+	form := forms.NewRecordUpsert(p.app, record)
+	form.LoadData(map[string]any{
+		"anime_no": animeInfo.AnimeNo,
+		"subject":  animeInfo.Subject,
+		"episode":  subtitleInfo.Episode,
+		"name":     subtitleInfo.Name,
+		"website":  subtitleInfo.Website,
+	})
+
+	if err := form.Submit(); err != nil {
+		return fmt.Errorf("failed to submit form: %v", err)
+	}
+
+	return nil
 }

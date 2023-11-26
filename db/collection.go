@@ -18,7 +18,13 @@ func InitCollection(app *pocketbase.PocketBase) error {
 		}
 	}
 
-	// TODO: Check if "anime_subtitle" collection exists
+	// Check if "anime_subtitle" collection exists
+	animeSubtitleCollection, _ := app.Dao().FindCollectionByNameOrId("anime_subtitle")
+	if animeSubtitleCollection == nil {
+		if err := createAnimeSubtitleCollection(app); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
@@ -79,6 +85,49 @@ func createAnimeInfoCollection(app *pocketbase.PocketBase) error {
 			&schema.SchemaField{
 				Name: "recent_episode",
 				Type: schema.FieldTypeNumber,
+			},
+		),
+	}
+
+	if err := app.Dao().SaveCollection(collection); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func createAnimeSubtitleCollection(app *pocketbase.PocketBase) error {
+	collection := &models.Collection{
+		Name:       "anime_subtitle",
+		Type:       models.CollectionTypeBase,
+		ListRule:   nil,
+		ViewRule:   nil,
+		CreateRule: nil,
+		UpdateRule: nil,
+		DeleteRule: nil,
+		Schema: schema.NewSchema(
+			&schema.SchemaField{
+				Name:     "anime_no",
+				Type:     schema.FieldTypeNumber,
+				Required: true,
+			},
+			&schema.SchemaField{
+				Name:     "subject",
+				Type:     schema.FieldTypeText,
+				Required: true,
+			},
+			&schema.SchemaField{
+				Name:     "episode",
+				Type:     schema.FieldTypeText,
+				Required: true,
+			},
+			&schema.SchemaField{
+				Name: "name",
+				Type: schema.FieldTypeText,
+			},
+			&schema.SchemaField{
+				Name: "website",
+				Type: schema.FieldTypeText,
 			},
 		),
 	}
