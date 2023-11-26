@@ -78,6 +78,9 @@ Sample Caption Data:
 - subject
 - episode
 - subtitle
+- website
+- name
+- subFile
 - createAt
 - updateAt
 

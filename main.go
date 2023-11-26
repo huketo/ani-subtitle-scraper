@@ -225,12 +225,12 @@ func main() {
 		log.Fatalf("failed to get api key")
 	}
 
-	// Poller를 생성한다.
-	pollingInterval := os.Getenv("POLLING_INTERVAL")
-	poller := poller.NewPoller(pollingInterval)
-
 	// PocketBase를 생성한다.
 	app := pocketbase.New()
+
+	// Poller를 생성한다.
+	pollingInterval := os.Getenv("POLLING_INTERVAL")
+	poller := poller.NewPoller(pollingInterval, app)
 
 	// 서버 시작 전에 실행할 함수를 등록한다.
 	app.OnBeforeServe().Add(func(e *core.ServeEvent) error {
@@ -254,7 +254,7 @@ func main() {
 		return nil
 	})
 
-	// 고루틴을 사용해서 서버 시작 후에 Collection을 초기화한다.
+	// 고루틴을 사용해서 서버 시작 후에 Collection이 정의되어 있지 않으면 정의한다.
 	go func() {
 		time.Sleep(10 * time.Second)
 		db.InitCollection(app)
